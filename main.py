@@ -119,22 +119,20 @@ def build_doc_structure(doc_id):
 
 def find_chapter_context(doc_id, match_page, query):
     """
-    Given a matched page, walk the document structure to find:
-    - The top-level chapter that contains this page
-    - All sections between that chapter and the matched paragraph
-    - The matched paragraph itself (with highlights)
-    Returns a structured list ready for the frontend.
+    Returns:
+      - breadcrumb: list of heading strings from top-level chapter down to matched code
+      - paragraph:  the matched paragraph text (with highlights)
     """
     segments = build_doc_structure(doc_id)
 
-    # Find which segments contain the matched page
+    # Find segments that contain the matched page
     matched_indices = [
         i for i, s in enumerate(segments)
         if match_page in s["pages"]
     ]
 
+    # Fallback: nearby pages
     if not matched_indices:
-        # Fallback: return segments that are near the page
         matched_indices = [
             i for i, s in enumerate(segments)
             if s["pages"] and (
@@ -144,39 +142,46 @@ def find_chapter_context(doc_id, match_page, query):
         ]
 
     if not matched_indices:
-        return []
+        return {"breadcrumb": [], "paragraph": ""}
 
     last_matched = matched_indices[-1]
 
-    # Walk backwards to find the nearest level-1 heading (chapter start)
-    chapter_start = 0
+    # Walk backwards collecting one heading per level (1, 2, 3)
+    # to build the breadcrumb path
+    breadcrumb_by_level = {}
     for i in range(last_matched, -1, -1):
-        if segments[i]["level"] == 1:
-            chapter_start = i
+        seg = segments[i]
+        if seg["heading"] and seg["level"] not in breadcrumb_by_level:
+            breadcrumb_by_level[seg["level"]] = seg["heading"]
+        # Stop once we have all levels or reach level 1
+        if 1 in breadcrumb_by_level:
             break
 
-    # Collect everything from chapter_start to last_matched (inclusive)
-    result = []
-    for i in range(chapter_start, last_matched + 1):
-        seg = segments[i]
-        is_match = match_page in seg["pages"]
+    # Sort breadcrumb by level (1 → 2 → 3)
+    breadcrumb = [breadcrumb_by_level[lvl]
+                  for lvl in sorted(breadcrumb_by_level.keys())]
 
-        # Highlight query terms in matched segment text
-        text = seg["text"]
-        if is_match and query:
-            for term in query.lower().split():
-                text = re.sub(f"(?i)({re.escape(term)})",
-                              r"<mark>\1</mark>", text)
+    # Get matched paragraph text (prefer the segment with most query hits)
+    matched_segs = [segments[i] for i in matched_indices]
+    terms = query.lower().split() if query else []
 
-        result.append({
-            "level":    seg["level"],
-            "heading":  seg["heading"],
-            "pages":    seg["pages"],
-            "text":     text,
-            "is_match": is_match,
-        })
+    def score_seg(s):
+        return sum(s["text"].lower().count(t) for t in terms) if terms else 0
 
-    return result
+    best = max(matched_segs, key=score_seg)
+    para = best["text"]
+
+    # Highlight query terms
+    if query:
+        for term in terms:
+            para = re.sub(f"(?i)({re.escape(term)})",
+                          r"<mark>\1</mark>", para)
+
+    return {
+        "breadcrumb": breadcrumb,
+        "paragraph":  para,
+        "page":       match_page,
+    }
 
 # ── Search helpers ──────────────────────────────────────────────────
 def search_index(query, doc_id=None, top_k=30):
@@ -304,8 +309,8 @@ def get_chapter():
     query  = request.args.get("q", "").strip()
     if not doc_id:
         return jsonify({"error": "doc_id required"}), 400
-    segments = find_chapter_context(doc_id, page, query)
-    return jsonify({"segments": segments, "match_page": page})
+    result = find_chapter_context(doc_id, page, query)
+    return jsonify(result)
 
 @app.route("/documents")
 def list_documents():
