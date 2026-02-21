@@ -15,7 +15,7 @@ import shutil
 from pathlib import Path
 from typing import List, Optional
 
-import pdfplumber
+from pypdf import PdfReader
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -102,20 +102,20 @@ def ingest_pdf(pdf_path: Path, doc_id: str, doc_name: str) -> int:
     all_chunks = load_index()
     new_chunks = []
 
-    with pdfplumber.open(pdf_path) as pdf:
-        for page_num, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text() or ""
-            if not text.strip():
-                continue
-            for chunk_text_part in chunk_text(text):
-                new_chunks.append({
-                    "id":       str(uuid.uuid4()),
-                    "doc_id":   doc_id,
-                    "doc_name": doc_name,
-                    "page":     page_num,
-                    "text":     chunk_text_part,
-                    "pdf_path": str(pdf_path.name),
-                })
+    reader = PdfReader(pdf_path)
+    for page_num, page in enumerate(reader.pages, start=1):
+        text = page.extract_text() or ""
+        if not text.strip():
+            continue
+        for chunk_text_part in chunk_text(text):
+            new_chunks.append({
+                "id":       str(uuid.uuid4()),
+                "doc_id":   doc_id,
+                "doc_name": doc_name,
+                "page":     page_num,
+                "text":     chunk_text_part,
+                "pdf_path": str(pdf_path.name),
+            })
 
     all_chunks.extend(new_chunks)
     save_index(all_chunks)
