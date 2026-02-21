@@ -1,8 +1,12 @@
 """
-Medical Coder PDF Search — Flask Backend v6
+Medical Coder PDF Search — Flask Backend v8
 --------------------------------------------
-New: /chapter endpoint returns full structured hierarchy
-     from top-level chapter down to matched paragraph.
+Fixes:
+  1. Heading detector now handles numeric Dutch ICD-10 structure
+     e.g. "8  Hoofdstuk", "8.4  Sectie", "8.4.1  Subsectie"
+  2. Breadcrumb walks backwards from matched page correctly
+  3. Paragraph shows text from CORRECT matched page (not page 1)
+  4. Chunk text preserved as full lines (no word-splitting)
 """
 
 import os
@@ -35,147 +39,100 @@ def save_index(chunks):
     IDX_FILE.write_text(json.dumps(chunks, indent=2))
 
 # ── Heading detector ────────────────────────────────────────────────
-# Returns (level, heading_text) or None if line is not a heading.
-# level 1 = top-level chapter, 2 = section, 3 = subcategory/code block
+# Matches numbered headings like:
+#   "8  Hoofdstuk titel"          → level 1
+#   "8.4  Sectie titel"           → level 2
+#   "8.4.1  Subsectie titel"      → level 3
+#   "8.4.1.2  Sub-sub titel"      → level 3
+# Also matches Dutch/French keywords as fallback
 
-HEADING_PATTERNS = [
-    # Level 1 — Chapter headings
-    (1, re.compile(r'^(CHAPTER\s+[\dIVXLCM]+[\.\:]?.*)$',        re.I)),
-    (1, re.compile(r'^(Chapter\s+[\dIVXLCM]+[\.\:]?.*)$')),
-    (1, re.compile(r'^(PART\s+[\dIVXLCM]+[\.\:]?.*)$',           re.I)),
-    (1, re.compile(r'^([IVX]{1,5}\.\s+[A-Z].{3,60})$')),          # Roman numeral titles
-
-    # Level 2 — Section / block headings  e.g. "F30-F39 Mood disorders"
-    (2, re.compile(r'^([A-Z]\d{2}-[A-Z]\d{2}\b.{0,80})$')),
-    (2, re.compile(r'^(\d{3}-\d{3}\b.{0,80})$')),
-    (2, re.compile(r'^([A-Z]{2,}\s[A-Z]{2,}(?:\s[A-Z]{2,})*.{0,60})$')),  # ALL CAPS title
-
-    # Level 3 — Subcategory / specific code  e.g. "F32 Major depressive episode"
-    (3, re.compile(r'^([A-Z]\d{2,3}\.?\d*\s+.{3,80})$')),
-    (3, re.compile(r'^(\d{3}\.?\d*\s+.{3,80})$')),
-]
+NUMERIC_HEADING = re.compile(
+    r'^(\d+(?:\.\d+)*)[\s\t]+([A-ZÀ-Ü\u00C0-\u017E].{1,100})$'
+)
+KEYWORD_HEADING = re.compile(
+    r'^(Hoofdstuk|Sectie|Afdeling|Chapitre|Section|Chapter|CHAPTER|PART|Deel)\s+.{1,80}$',
+    re.IGNORECASE
+)
 
 def detect_heading(line):
     line = line.strip()
-    if not line or len(line) > 120:
+    if not line or len(line) > 150:
         return None
-    for level, pat in HEADING_PATTERNS:
-        if pat.match(line):
-            return (level, line)
+
+    # Numeric heading: "8.4.1  Title"
+    m = NUMERIC_HEADING.match(line)
+    if m:
+        number = m.group(1)
+        depth  = number.count('.') + 1   # "8"→1, "8.4"→2, "8.4.1"→3
+        level  = min(depth, 3)
+        return (level, line)
+
+    # Keyword heading: "Hoofdstuk 8 – ..."
+    if KEYWORD_HEADING.match(line):
+        return (1, line)
+
     return None
 
-# ── Full-document structure builder ─────────────────────────────────
-def build_doc_structure(doc_id):
-    """
-    Read all chunks for a document in page order.
-    Returns a list of segments: {level, heading, pages, text}
-    level 0 = plain paragraph (no heading detected above it)
-    """
+# ── Build page-level text store ─────────────────────────────────────
+def get_pages_for_doc(doc_id):
+    """Return dict {page_num: full_text} for a document."""
     chunks = load_index()
-    doc_chunks = [c for c in chunks if c["doc_id"] == doc_id]
-    doc_chunks.sort(key=lambda c: (c["page"], c["id"]))
+    pages  = {}
+    for c in chunks:
+        if c["doc_id"] != doc_id:
+            continue
+        p = c["page"]
+        if p not in pages:
+            pages[p] = []
+        pages[p].append(c["text"])
+    # Join chunks per page
+    return {p: "\n".join(texts) for p, texts in pages.items()}
 
-    segments = []
-    current  = {"level": 0, "heading": None, "pages": set(), "lines": []}
+# ── Breadcrumb builder ──────────────────────────────────────────────
+def find_breadcrumb_and_paragraph(doc_id, match_page, query):
+    """
+    Scan all pages UP TO match_page.
+    Collect the most recent heading at each level (1, 2, 3).
+    Return breadcrumb list + matched paragraph text.
+    """
+    pages = get_pages_for_doc(doc_id)
+    if not pages:
+        return {"breadcrumb": [], "paragraph": "", "page": match_page}
 
-    for chunk in doc_chunks:
-        lines = chunk["text"].split("\n")
-        if not lines:
-            lines = [chunk["text"]]
+    # Track latest heading per level seen so far
+    breadcrumb_by_level = {}
 
-        for line in lines:
+    # Scan pages in order up to and including match_page
+    for page_num in sorted(pages.keys()):
+        page_text = pages[page_num]
+        for line in page_text.split("\n"):
             h = detect_heading(line)
             if h:
-                # Save current segment
-                if current["lines"]:
-                    segments.append({
-                        "level":   current["level"],
-                        "heading": current["heading"],
-                        "pages":   sorted(current["pages"]),
-                        "text":    " ".join(current["lines"]).strip(),
-                    })
-                # Start new segment
-                current = {
-                    "level":   h[0],
-                    "heading": h[1],
-                    "pages":   {chunk["page"]},
-                    "lines":   [],
-                }
-            else:
-                current["pages"].add(chunk["page"])
-                if line.strip():
-                    current["lines"].append(line.strip())
+                level, heading = h
+                breadcrumb_by_level[level] = heading
+                # Clear deeper levels when a shallower heading appears
+                for deeper in list(breadcrumb_by_level.keys()):
+                    if deeper > level:
+                        del breadcrumb_by_level[deeper]
 
-    # Flush last segment
-    if current["lines"]:
-        segments.append({
-            "level":   current["level"],
-            "heading": current["heading"],
-            "pages":   sorted(current["pages"]),
-            "text":    " ".join(current["lines"]).strip(),
-        })
-
-    return segments
-
-def find_chapter_context(doc_id, match_page, query):
-    """
-    Returns:
-      - breadcrumb: list of heading strings from top-level chapter down to matched code
-      - paragraph:  the matched paragraph text (with highlights)
-    """
-    segments = build_doc_structure(doc_id)
-
-    # Find segments that contain the matched page
-    matched_indices = [
-        i for i, s in enumerate(segments)
-        if match_page in s["pages"]
-    ]
-
-    # Fallback: nearby pages
-    if not matched_indices:
-        matched_indices = [
-            i for i, s in enumerate(segments)
-            if s["pages"] and (
-                abs(min(s["pages"]) - match_page) <= 2 or
-                abs(max(s["pages"]) - match_page) <= 2
-            )
-        ]
-
-    if not matched_indices:
-        return {"breadcrumb": [], "paragraph": ""}
-
-    last_matched = matched_indices[-1]
-
-    # Walk backwards collecting one heading per level (1, 2, 3)
-    # to build the breadcrumb path
-    breadcrumb_by_level = {}
-    for i in range(last_matched, -1, -1):
-        seg = segments[i]
-        if seg["heading"] and seg["level"] not in breadcrumb_by_level:
-            breadcrumb_by_level[seg["level"]] = seg["heading"]
-        # Stop once we have all levels or reach level 1
-        if 1 in breadcrumb_by_level:
+        if page_num == match_page:
             break
 
-    # Sort breadcrumb by level (1 → 2 → 3)
     breadcrumb = [breadcrumb_by_level[lvl]
                   for lvl in sorted(breadcrumb_by_level.keys())]
 
-    # Get matched paragraph text (prefer the segment with most query hits)
-    matched_segs = [segments[i] for i in matched_indices]
-    terms = query.lower().split() if query else []
-
-    def score_seg(s):
-        return sum(s["text"].lower().count(t) for t in terms) if terms else 0
-
-    best = max(matched_segs, key=score_seg)
-    para = best["text"]
+    # Get paragraph from the CORRECT matched page
+    para = pages.get(match_page, "")
 
     # Highlight query terms
-    if query:
+    terms = query.lower().split() if query else []
+    if terms:
         for term in terms:
-            para = re.sub(f"(?i)({re.escape(term)})",
-                          r"<mark>\1</mark>", para)
+            para = re.sub(
+                f"(?i)({re.escape(term)})",
+                r"<mark>\1</mark>",
+                para
+            )
 
     return {
         "breadcrumb": breadcrumb,
@@ -198,7 +155,7 @@ def search_index(query, doc_id=None, top_k=30):
     results.sort(key=lambda x: x["score"], reverse=True)
     return results[:top_k]
 
-def highlight_snippet(text, query, window=200):
+def highlight_snippet(text, query, window=250):
     terms      = query.lower().split()
     text_lower = text.lower()
     best_pos   = -1
@@ -217,18 +174,7 @@ def highlight_snippet(text, query, window=200):
     return snippet
 
 # ── PDF ingestion ───────────────────────────────────────────────────
-CHUNK_SIZE    = 300
-CHUNK_OVERLAP = 50
-
-def chunk_text(text):
-    words  = text.split()
-    chunks = []
-    i = 0
-    while i < len(words):
-        chunks.append(" ".join(words[i: i + CHUNK_SIZE]))
-        i += CHUNK_SIZE - CHUNK_OVERLAP
-    return chunks
-
+# Store full page text per chunk (one chunk per page) to preserve line structure
 def ingest_pdf(pdf_path, doc_id, doc_name):
     all_chunks = load_index()
     new_chunks = []
@@ -237,15 +183,15 @@ def ingest_pdf(pdf_path, doc_id, doc_name):
         text = page.extract_text() or ""
         if not text.strip():
             continue
-        for part in chunk_text(text):
-            new_chunks.append({
-                "id":       str(uuid.uuid4()),
-                "doc_id":   doc_id,
-                "doc_name": doc_name,
-                "page":     page_num,
-                "text":     part,
-                "pdf_path": pdf_path.name,
-            })
+        # Store full page as one chunk — preserves line breaks for heading detection
+        new_chunks.append({
+            "id":       str(uuid.uuid4()),
+            "doc_id":   doc_id,
+            "doc_name": doc_name,
+            "page":     page_num,
+            "text":     text,
+            "pdf_path": pdf_path.name,
+        })
     all_chunks.extend(new_chunks)
     save_index(all_chunks)
     return len(new_chunks)
@@ -303,13 +249,12 @@ def search():
 
 @app.route("/chapter")
 def get_chapter():
-    """Return full hierarchical context from chapter down to matched paragraph."""
     doc_id = request.args.get("doc_id", "").strip()
     page   = int(request.args.get("page", 1))
     query  = request.args.get("q", "").strip()
     if not doc_id:
         return jsonify({"error": "doc_id required"}), 400
-    result = find_chapter_context(doc_id, page, query)
+    result = find_breadcrumb_and_paragraph(doc_id, page, query)
     return jsonify(result)
 
 @app.route("/documents")
