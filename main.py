@@ -176,3 +176,38 @@ def delete_document(doc_id):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
+
+
+@app.route("/context")
+def get_context():
+    """Return text from pages around a given page in a document."""
+    doc_id   = request.args.get("doc_id", "").strip()
+    page     = int(request.args.get("page", 1))
+    radius   = int(request.args.get("radius", 1))  # pages before & after
+
+    if not doc_id:
+        return jsonify({"error": "doc_id required"}), 400
+
+    page_min = max(1, page - radius)
+    page_max = page + radius
+
+    chunks = load_index()
+    # Collect all chunks within the page range for this document
+    pages = {}
+    for c in chunks:
+        if c["doc_id"] != doc_id:
+            continue
+        p = c["page"]
+        if page_min <= p <= page_max:
+            if p not in pages:
+                pages[p] = {"page": p, "text": ""}
+            pages[p]["text"] += " " + c["text"]
+
+    # Sort by page number
+    result = sorted(pages.values(), key=lambda x: x["page"])
+    return jsonify({
+        "doc_id":   doc_id,
+        "pages":    result,
+        "page_min": page_min,
+        "page_max": page_max,
+    })

@@ -518,6 +518,117 @@ aside {
   header { padding: 16px 20px; }
   .search-bar-wrap, .results-area { padding-left: 20px; padding-right: 20px; }
 }
+
+/* ── Chapter panel ───────────────────────────────────────────────── */
+.result-card {
+  flex-direction: column;
+}
+.result-card-top {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: start;
+  width: 100%;
+}
+.card-expanded {
+  border-color: rgba(0,229,160,.4) !important;
+}
+
+.btn-chapter {
+  background: rgba(0,119,255,.1);
+  border: 1px solid rgba(0,119,255,.3);
+  color: #60a5fa;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all .15s;
+  white-space: nowrap;
+}
+.btn-chapter:hover {
+  background: rgba(0,119,255,.2);
+  border-color: #60a5fa;
+}
+
+.chapter-panel {
+  width: 100%;
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+  animation: fadeUp .2s ease;
+}
+
+.chapter-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.chapter-error {
+  color: var(--danger);
+  font-size: 13px;
+  font-family: var(--mono);
+}
+
+.chapter-header {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--accent);
+  margin-bottom: 14px;
+}
+
+.chapter-page {
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background: rgba(255,255,255,.02);
+  border: 1px solid var(--border);
+}
+.chapter-page-match {
+  background: rgba(0,229,160,.04);
+  border-color: rgba(0,229,160,.2);
+}
+
+.chapter-page-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.match-badge {
+  background: rgba(0,229,160,.15);
+  color: var(--accent);
+  border: 1px solid rgba(0,229,160,.3);
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+}
+
+.chapter-page-text {
+  font-size: 13px;
+  line-height: 1.75;
+  color: #94a3b8;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.chapter-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 10px 0;
+}
+
 </style>
 </head>
 <body>
@@ -841,8 +952,8 @@ function renderResults(results, q) {
   }
 
   area.innerHTML = results.map((r, i) => `
-    <div class="result-card" style="animation-delay:${i * 30}ms">
-      <div class="result-left">
+    <div class="result-card" id="card-${r.chunk_id}" style="animation-delay:${i * 30}ms">
+      <div class="result-card-top"><div class="result-left">
         <div class="result-top">
           <div class="result-doc" title="${escHtml(r.doc_name)}">📋 ${escHtml(r.doc_name)}</div>
           <div class="result-page">pg. ${r.page}</div>
@@ -857,13 +968,74 @@ function renderResults(results, q) {
            title="Open PDF at page ${r.page}">
           ↗ Jump to page ${r.page}
         </a>
+        <button class="btn btn-chapter" id="btn-${r.chunk_id}"
+                onclick="toggleChapter('${r.chunk_id}', '${r.doc_id}', ${r.page})">
+          📖 Show context
+        </button>
         <button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;"
                 onclick="filterByDoc('${r.doc_id}', '${escHtml(r.doc_name)}')">
           Filter doc
         </button>
       </div>
+      </div><!-- /.result-card-top -->
+      <div class="chapter-panel" id="chapter-${r.chunk_id}" style="display:none;">
+        <div class="chapter-loading"><div class="spinner"></div> Loading surrounding pages…</div>
+      </div>
     </div>
   `).join('');
+}
+
+// ── Chapter expand ─────────────────────────────────────────────────
+const chapterCache = {};
+
+async function toggleChapter(chunkId, docId, page) {
+  const panel = document.getElementById(`chapter-${chunkId}`);
+  const btn   = document.getElementById(`btn-${chunkId}`);
+  const card  = document.getElementById(`card-${chunkId}`);
+
+  if (panel.style.display !== 'none') {
+    panel.style.display = 'none';
+    btn.textContent = '📖 Show context';
+    card.classList.remove('card-expanded');
+    return;
+  }
+
+  panel.style.display = 'block';
+  btn.textContent = '▲ Hide context';
+  card.classList.add('card-expanded');
+
+  const cacheKey = `${docId}-${page}`;
+  if (chapterCache[cacheKey]) { renderChapter(panel, chapterCache[cacheKey], page); return; }
+
+  try {
+    const r    = await fetch(`${API}/context?doc_id=${docId}&page=${page}&radius=1`);
+    const data = await r.json();
+    chapterCache[cacheKey] = data;
+    renderChapter(panel, data, page);
+  } catch (e) {
+    panel.innerHTML = `<div class="chapter-error">⚠️ Could not load context.</div>`;
+  }
+}
+
+function renderChapter(panel, data, matchPage) {
+  if (!data.pages || !data.pages.length) {
+    panel.innerHTML = `<div class="chapter-error">No surrounding text found.</div>`;
+    return;
+  }
+  const html = data.pages.map(p => `
+    <div class="chapter-page ${p.page === matchPage ? 'chapter-page-match' : ''}">
+      <div class="chapter-page-label">
+        ${p.page === matchPage ? '▶ ' : ''}Page ${p.page}
+        ${p.page === matchPage ? '<span class="match-badge">matched</span>' : ''}
+      </div>
+      <div class="chapter-page-text">${escHtml(p.text.trim())}</div>
+    </div>
+  `).join('<div class="chapter-divider"></div>');
+
+  panel.innerHTML = `
+    <div class="chapter-header">📄 Pages ${data.page_min}–${data.page_max}</div>
+    ${html}
+  `;
 }
 
 // ── Toast ─────────────────────────────────────────────────────────
