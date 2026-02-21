@@ -629,6 +629,130 @@ aside {
   margin: 10px 0;
 }
 
+
+/* ── Hierarchy tree styles ───────────────────────────────────────── */
+.chapter-wrap { width: 100%; }
+
+/* Breadcrumb path */
+.bc-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 10px 14px;
+  background: rgba(0,229,160,.05);
+  border: 1px solid rgba(0,229,160,.15);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  font-size: 12px;
+}
+.bc-label {
+  font-family: var(--mono);
+  color: var(--accent);
+  font-size: 11px;
+  margin-right: 4px;
+}
+.bc-item {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.bc-sep { color: var(--muted); font-size: 11px; }
+
+/* Hierarchy tree */
+.hier-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hier-seg {
+  padding: 10px 14px;
+  border-radius: 6px;
+  border-left: 2px solid transparent;
+  transition: background .15s;
+}
+.hier-seg:hover { background: rgba(255,255,255,.02); }
+
+.hier-level-1 { border-left-color: var(--accent); }
+.hier-level-2 { border-left-color: var(--accent2); }
+.hier-level-3 { border-left-color: #a78bfa; }
+.hier-level-0 { border-left-color: var(--border); }
+
+.hier-seg-match {
+  background: rgba(0,229,160,.05) !important;
+  border-left-color: var(--accent) !important;
+  border-radius: 6px;
+}
+
+.hier-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.hier-icon { font-size: 14px; flex-shrink: 0; }
+.hier-heading-text {
+  font-family: var(--sans);
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text);
+  flex: 1;
+}
+.hier-pages {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  background: rgba(255,255,255,.05);
+  border: 1px solid var(--border);
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.hier-body {
+  font-size: 13px;
+  line-height: 1.75;
+  color: #94a3b8;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 2px 0;
+}
+.hier-body mark {
+  background: rgba(255,214,10,.25);
+  color: var(--highlight);
+  border-radius: 2px;
+  padding: 0 2px;
+  font-weight: 600;
+}
+.hier-body-match {
+  color: #cbd5e1;
+  max-height: none;
+}
+
+.hier-match-flag {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hier-divider {
+  height: 1px;
+  background: rgba(255,255,255,.04);
+  margin: 4px 0;
+}
+
 </style>
 </head>
 <body>
@@ -969,8 +1093,8 @@ function renderResults(results, q) {
           ↗ Jump to page ${r.page}
         </a>
         <button class="btn btn-chapter" id="btn-${r.chunk_id}"
-                onclick="toggleChapter('${r.chunk_id}', '${r.doc_id}', ${r.page})">
-          📖 Show context
+                onclick="toggleChapter('${r.chunk_id}', '${r.doc_id}', ${r.page}, '${escHtml(lastQuery)}')">
+          📖 Show chapter
         </button>
         <button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;"
                 onclick="filterByDoc('${r.doc_id}', '${escHtml(r.doc_name)}')">
@@ -988,54 +1112,81 @@ function renderResults(results, q) {
 // ── Chapter expand ─────────────────────────────────────────────────
 const chapterCache = {};
 
-async function toggleChapter(chunkId, docId, page) {
+async function toggleChapter(chunkId, docId, page, query) {
   const panel = document.getElementById(`chapter-${chunkId}`);
   const btn   = document.getElementById(`btn-${chunkId}`);
   const card  = document.getElementById(`card-${chunkId}`);
 
   if (panel.style.display !== 'none') {
     panel.style.display = 'none';
-    btn.textContent = '📖 Show context';
+    btn.innerHTML = '📖 Show chapter';
     card.classList.remove('card-expanded');
     return;
   }
 
   panel.style.display = 'block';
-  btn.textContent = '▲ Hide context';
+  btn.innerHTML = '▲ Hide chapter';
   card.classList.add('card-expanded');
 
   const cacheKey = `${docId}-${page}`;
-  if (chapterCache[cacheKey]) { renderChapter(panel, chapterCache[cacheKey], page); return; }
+  if (chapterCache[cacheKey]) { renderChapter(panel, chapterCache[cacheKey]); return; }
+
+  panel.innerHTML = '<div class="chapter-loading"><div class="spinner"></div> Building chapter hierarchy…</div>';
 
   try {
-    const r    = await fetch(`${API}/context?doc_id=${docId}&page=${page}&radius=1`);
+    const r    = await fetch(`${API}/chapter?doc_id=${docId}&page=${page}&q=${encodeURIComponent(query)}`);
     const data = await r.json();
     chapterCache[cacheKey] = data;
-    renderChapter(panel, data, page);
+    renderChapter(panel, data);
   } catch (e) {
-    panel.innerHTML = `<div class="chapter-error">⚠️ Could not load context.</div>`;
+    panel.innerHTML = `<div class="chapter-error">⚠️ Could not load chapter: ${escHtml(e.message)}</div>`;
   }
 }
 
-function renderChapter(panel, data, matchPage) {
-  if (!data.pages || !data.pages.length) {
-    panel.innerHTML = `<div class="chapter-error">No surrounding text found.</div>`;
+const LEVEL_LABELS = { 0: '¶ Paragraph', 1: 'Chapter', 2: 'Section', 3: 'Subcategory' };
+const LEVEL_ICONS  = { 0: '📝', 1: '📚', 2: '📂', 3: '🏷' };
+
+function renderChapter(panel, data) {
+  const segs = data.segments;
+  if (!segs || !segs.length) {
+    panel.innerHTML = '<div class="chapter-error">No chapter structure detected in this document.</div>';
     return;
   }
-  const html = data.pages.map(p => `
-    <div class="chapter-page ${p.page === matchPage ? 'chapter-page-match' : ''}">
-      <div class="chapter-page-label">
-        ${p.page === matchPage ? '▶ ' : ''}Page ${p.page}
-        ${p.page === matchPage ? '<span class="match-badge">matched</span>' : ''}
-      </div>
-      <div class="chapter-page-text">${escHtml(p.text.trim())}</div>
-    </div>
-  `).join('<div class="chapter-divider"></div>');
+
+  // Build breadcrumb from headings only
+  const headings = segs.filter(s => s.heading);
+  const breadcrumb = headings.map(s => `<span class="bc-item">${escHtml(s.heading)}</span>`).join('<span class="bc-sep">›</span>');
+
+  const segHtml = segs.map(seg => {
+    const level     = seg.level || 0;
+    const isMatch   = seg.is_match;
+    const indent    = level === 1 ? 0 : level === 2 ? 20 : level === 3 ? 40 : 56;
+    const pageList  = seg.pages && seg.pages.length ? `pg. ${seg.pages[0]}${seg.pages.length > 1 ? '–' + seg.pages[seg.pages.length-1] : ''}` : '';
+
+    return `
+      <div class="hier-seg ${isMatch ? 'hier-seg-match' : ''} hier-level-${level}"
+           style="margin-left:${indent}px">
+        ${seg.heading ? `
+          <div class="hier-heading">
+            <span class="hier-icon">${LEVEL_ICONS[level] || '📄'}</span>
+            <span class="hier-heading-text">${escHtml(seg.heading)}</span>
+            ${pageList ? `<span class="hier-pages">${pageList}</span>` : ''}
+          </div>` : ''}
+        ${seg.text ? `
+          <div class="hier-body ${isMatch ? 'hier-body-match' : ''}">${seg.text}</div>
+        ` : ''}
+        ${isMatch ? '<div class="hier-match-flag">▶ Code found here</div>' : ''}
+      </div>`;
+  }).join('<div class="hier-divider"></div>');
 
   panel.innerHTML = `
-    <div class="chapter-header">📄 Pages ${data.page_min}–${data.page_max}</div>
-    ${html}
-  `;
+    <div class="chapter-wrap">
+      <div class="bc-row">
+        <span class="bc-label">📍 Path:</span>
+        ${breadcrumb || '<span style="color:var(--muted)">No headings detected</span>'}
+      </div>
+      <div class="hier-tree">${segHtml}</div>
+    </div>`;
 }
 
 // ── Toast ─────────────────────────────────────────────────────────

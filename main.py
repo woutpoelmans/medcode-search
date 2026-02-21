@@ -1,6 +1,8 @@
 """
-Medical Coder PDF Search — Flask Backend
-100% pure Python. No Rust. No C extensions.
+Medical Coder PDF Search — Flask Backend v6
+--------------------------------------------
+New: /chapter endpoint returns full structured hierarchy
+     from top-level chapter down to matched paragraph.
 """
 
 import os
@@ -21,7 +23,7 @@ PDF_DIR.mkdir(exist_ok=True)
 IDX_FILE.parent.mkdir(exist_ok=True)
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
+app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024
 
 # ── Index helpers ───────────────────────────────────────────────────
 def load_index():
@@ -32,7 +34,151 @@ def load_index():
 def save_index(chunks):
     IDX_FILE.write_text(json.dumps(chunks, indent=2))
 
-# ── Search ──────────────────────────────────────────────────────────
+# ── Heading detector ────────────────────────────────────────────────
+# Returns (level, heading_text) or None if line is not a heading.
+# level 1 = top-level chapter, 2 = section, 3 = subcategory/code block
+
+HEADING_PATTERNS = [
+    # Level 1 — Chapter headings
+    (1, re.compile(r'^(CHAPTER\s+[\dIVXLCM]+[\.\:]?.*)$',        re.I)),
+    (1, re.compile(r'^(Chapter\s+[\dIVXLCM]+[\.\:]?.*)$')),
+    (1, re.compile(r'^(PART\s+[\dIVXLCM]+[\.\:]?.*)$',           re.I)),
+    (1, re.compile(r'^([IVX]{1,5}\.\s+[A-Z].{3,60})$')),          # Roman numeral titles
+
+    # Level 2 — Section / block headings  e.g. "F30-F39 Mood disorders"
+    (2, re.compile(r'^([A-Z]\d{2}-[A-Z]\d{2}\b.{0,80})$')),
+    (2, re.compile(r'^(\d{3}-\d{3}\b.{0,80})$')),
+    (2, re.compile(r'^([A-Z]{2,}\s[A-Z]{2,}(?:\s[A-Z]{2,})*.{0,60})$')),  # ALL CAPS title
+
+    # Level 3 — Subcategory / specific code  e.g. "F32 Major depressive episode"
+    (3, re.compile(r'^([A-Z]\d{2,3}\.?\d*\s+.{3,80})$')),
+    (3, re.compile(r'^(\d{3}\.?\d*\s+.{3,80})$')),
+]
+
+def detect_heading(line):
+    line = line.strip()
+    if not line or len(line) > 120:
+        return None
+    for level, pat in HEADING_PATTERNS:
+        if pat.match(line):
+            return (level, line)
+    return None
+
+# ── Full-document structure builder ─────────────────────────────────
+def build_doc_structure(doc_id):
+    """
+    Read all chunks for a document in page order.
+    Returns a list of segments: {level, heading, pages, text}
+    level 0 = plain paragraph (no heading detected above it)
+    """
+    chunks = load_index()
+    doc_chunks = [c for c in chunks if c["doc_id"] == doc_id]
+    doc_chunks.sort(key=lambda c: (c["page"], c["id"]))
+
+    segments = []
+    current  = {"level": 0, "heading": None, "pages": set(), "lines": []}
+
+    for chunk in doc_chunks:
+        lines = chunk["text"].split("\n")
+        if not lines:
+            lines = [chunk["text"]]
+
+        for line in lines:
+            h = detect_heading(line)
+            if h:
+                # Save current segment
+                if current["lines"]:
+                    segments.append({
+                        "level":   current["level"],
+                        "heading": current["heading"],
+                        "pages":   sorted(current["pages"]),
+                        "text":    " ".join(current["lines"]).strip(),
+                    })
+                # Start new segment
+                current = {
+                    "level":   h[0],
+                    "heading": h[1],
+                    "pages":   {chunk["page"]},
+                    "lines":   [],
+                }
+            else:
+                current["pages"].add(chunk["page"])
+                if line.strip():
+                    current["lines"].append(line.strip())
+
+    # Flush last segment
+    if current["lines"]:
+        segments.append({
+            "level":   current["level"],
+            "heading": current["heading"],
+            "pages":   sorted(current["pages"]),
+            "text":    " ".join(current["lines"]).strip(),
+        })
+
+    return segments
+
+def find_chapter_context(doc_id, match_page, query):
+    """
+    Given a matched page, walk the document structure to find:
+    - The top-level chapter that contains this page
+    - All sections between that chapter and the matched paragraph
+    - The matched paragraph itself (with highlights)
+    Returns a structured list ready for the frontend.
+    """
+    segments = build_doc_structure(doc_id)
+
+    # Find which segments contain the matched page
+    matched_indices = [
+        i for i, s in enumerate(segments)
+        if match_page in s["pages"]
+    ]
+
+    if not matched_indices:
+        # Fallback: return segments that are near the page
+        matched_indices = [
+            i for i, s in enumerate(segments)
+            if s["pages"] and (
+                abs(min(s["pages"]) - match_page) <= 2 or
+                abs(max(s["pages"]) - match_page) <= 2
+            )
+        ]
+
+    if not matched_indices:
+        return []
+
+    last_matched = matched_indices[-1]
+
+    # Walk backwards to find the nearest level-1 heading (chapter start)
+    chapter_start = 0
+    for i in range(last_matched, -1, -1):
+        if segments[i]["level"] == 1:
+            chapter_start = i
+            break
+
+    # Collect everything from chapter_start to last_matched (inclusive)
+    result = []
+    for i in range(chapter_start, last_matched + 1):
+        seg = segments[i]
+        is_match = match_page in seg["pages"]
+
+        # Highlight query terms in matched segment text
+        text = seg["text"]
+        if is_match and query:
+            for term in query.lower().split():
+                text = re.sub(f"(?i)({re.escape(term)})",
+                              r"<mark>\1</mark>", text)
+
+        result.append({
+            "level":    seg["level"],
+            "heading":  seg["heading"],
+            "pages":    seg["pages"],
+            "text":     text,
+            "is_match": is_match,
+        })
+
+    return result
+
+# ── Search helpers ──────────────────────────────────────────────────
 def search_index(query, doc_id=None, top_k=30):
     chunks = load_index()
     terms  = query.lower().split()
@@ -150,6 +296,17 @@ def search():
         })
     return jsonify(results)
 
+@app.route("/chapter")
+def get_chapter():
+    """Return full hierarchical context from chapter down to matched paragraph."""
+    doc_id = request.args.get("doc_id", "").strip()
+    page   = int(request.args.get("page", 1))
+    query  = request.args.get("q", "").strip()
+    if not doc_id:
+        return jsonify({"error": "doc_id required"}), 400
+    segments = find_chapter_context(doc_id, page, query)
+    return jsonify({"segments": segments, "match_page": page})
+
 @app.route("/documents")
 def list_documents():
     chunks = load_index()
@@ -176,38 +333,3 @@ def delete_document(doc_id):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
-
-
-@app.route("/context")
-def get_context():
-    """Return text from pages around a given page in a document."""
-    doc_id   = request.args.get("doc_id", "").strip()
-    page     = int(request.args.get("page", 1))
-    radius   = int(request.args.get("radius", 1))  # pages before & after
-
-    if not doc_id:
-        return jsonify({"error": "doc_id required"}), 400
-
-    page_min = max(1, page - radius)
-    page_max = page + radius
-
-    chunks = load_index()
-    # Collect all chunks within the page range for this document
-    pages = {}
-    for c in chunks:
-        if c["doc_id"] != doc_id:
-            continue
-        p = c["page"]
-        if page_min <= p <= page_max:
-            if p not in pages:
-                pages[p] = {"page": p, "text": ""}
-            pages[p]["text"] += " " + c["text"]
-
-    # Sort by page number
-    result = sorted(pages.values(), key=lambda x: x["page"])
-    return jsonify({
-        "doc_id":   doc_id,
-        "pages":    result,
-        "page_min": page_min,
-        "page_max": page_max,
-    })
