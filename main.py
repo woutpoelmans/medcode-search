@@ -89,40 +89,131 @@ def get_pages_for_doc(doc_id):
     return {p: "\n".join(texts) for p, texts in pages.items()}
 
 # ── Breadcrumb builder ──────────────────────────────────────────────
+
+def extract_paragraph(page_text, query):
+    """
+    From the full page text, extract the specific paragraph block
+    that contains the query terms. A paragraph is defined as lines
+    between two heading-like boundaries or blank lines.
+    Falls back to a windowed snippet if no clear block found.
+    """
+    if not page_text or not query:
+        return page_text[:500] if page_text else ""
+
+    terms = query.lower().split()
+    lines = page_text.split("\n")
+
+    # Split into blocks separated by blank lines or headings
+    blocks = []
+    current = []
+    for line in lines:
+        stripped = line.strip()
+        is_heading = detect_heading(stripped) is not None
+        is_blank   = stripped == ""
+
+        if is_heading or is_blank:
+            if current:
+                blocks.append("\n".join(current))
+                current = []
+            if is_heading:
+                blocks.append(stripped)  # heading as its own block
+        else:
+            current.append(stripped)
+
+    if current:
+        blocks.append("\n".join(current))
+
+    # Score each block by how many query terms it contains
+    scored = []
+    for block in blocks:
+        block_lower = block.lower()
+        score = sum(block_lower.count(t) for t in terms)
+        if score > 0:
+            scored.append((score, block))
+
+    if scored:
+        # Return the best matching block
+        scored.sort(key=lambda x: x[0], reverse=True)
+        best_block = scored[0][1]
+
+        # Also include the block immediately before (for context)
+        best_idx = blocks.index(best_block)
+        context_blocks = []
+        if best_idx > 0 and not detect_heading(blocks[best_idx - 1]):
+            context_blocks.append(blocks[best_idx - 1])
+        context_blocks.append(best_block)
+        return "\n\n".join(context_blocks)
+
+    # Fallback: windowed snippet around first term match
+    text_lower = page_text.lower()
+    for term in terms:
+        pos = text_lower.find(term)
+        if pos != -1:
+            start = max(0, pos - 200)
+            end   = min(len(page_text), pos + 400)
+            return ("..." if start > 0 else "") + page_text[start:end] + ("..." if end < len(page_text) else "")
+
+    return page_text[:500]
+
 def find_breadcrumb_and_paragraph(doc_id, match_page, query):
     """
     Scan all pages UP TO match_page.
-    Collect the most recent heading at each level (1, 2, 3).
-    Return breadcrumb list + matched paragraph text.
+    On the matched page: stop updating breadcrumb once we pass
+    the line that contains the query term — so we never pick up
+    a heading that comes AFTER the matched code on the same page.
     """
     pages = get_pages_for_doc(doc_id)
     if not pages:
         return {"breadcrumb": [], "paragraph": "", "page": match_page}
 
-    # Track latest heading per level seen so far
+    terms = query.lower().split() if query else []
     breadcrumb_by_level = {}
 
-    # Scan pages in order up to and including match_page
     for page_num in sorted(pages.keys()):
         page_text = pages[page_num]
-        for line in page_text.split("\n"):
-            h = detect_heading(line)
-            if h:
-                level, heading = h
-                breadcrumb_by_level[level] = heading
-                # Clear deeper levels when a shallower heading appears
-                for deeper in list(breadcrumb_by_level.keys()):
-                    if deeper > level:
-                        del breadcrumb_by_level[deeper]
+        lines     = page_text.split("\n")
 
-        if page_num == match_page:
-            break
+        if page_num < match_page:
+            # Pages before the match: scan everything
+            for line in lines:
+                h = detect_heading(line)
+                if h:
+                    level, heading = h
+                    breadcrumb_by_level[level] = heading
+                    for deeper in list(breadcrumb_by_level.keys()):
+                        if deeper > level:
+                            del breadcrumb_by_level[deeper]
+
+        elif page_num == match_page:
+            # On the matched page: scan line by line and STOP
+            # updating breadcrumb once we hit the line with the code
+            code_found = False
+            for line in lines:
+                line_lower = line.lower()
+
+                # Check if this line contains any query term
+                if not code_found and terms:
+                    if any(t in line_lower for t in terms):
+                        code_found = True
+                        # Do NOT update breadcrumb for this line or after
+
+                if not code_found:
+                    # Still before the code — update breadcrumb normally
+                    h = detect_heading(line)
+                    if h:
+                        level, heading = h
+                        breadcrumb_by_level[level] = heading
+                        for deeper in list(breadcrumb_by_level.keys()):
+                            if deeper > level:
+                                del breadcrumb_by_level[deeper]
+            break  # stop after matched page
 
     breadcrumb = [breadcrumb_by_level[lvl]
                   for lvl in sorted(breadcrumb_by_level.keys())]
 
-    # Get paragraph from the CORRECT matched page
-    para = pages.get(match_page, "")
+    # Extract only the paragraph block that contains the query terms
+    page_text = pages.get(match_page, "")
+    para      = extract_paragraph(page_text, query)
 
     # Highlight query terms
     terms = query.lower().split() if query else []
