@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>MedCode Search — ICD-10 PDF Finder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Syne:wght@400;600;800&family=Inter:wght@300;400;500&display=swap" rel="stylesheet"/>
+<style>
+/* ── Reset & Variables ──────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #0b0e14;
+  --surface:   #111520;
+  --border:    #1f2535;
+  --accent:    #00e5a0;
+  --accent2:   #0077ff;
+  --danger:    #ff4b6e;
+  --text:      #e2e8f0;
+  --muted:     #64748b;
+  --highlight: #ffd60a;
+  --mono:      'IBM Plex Mono', monospace;
+  --sans:      'Syne', sans-serif;
+  --body:      'Inter', sans-serif;
+  --radius:    8px;
+  --shadow:    0 4px 24px rgba(0,0,0,.4);
+}
+
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--body);
+  font-size: 15px;
+  line-height: 1.6;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── Grid noise background ──────────────────────────────────────── */
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background-image:
+    linear-gradient(rgba(0,229,160,.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,229,160,.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ── Layout ─────────────────────────────────────────────────────── */
+.app { position: relative; z-index: 1; }
+
+/* ── Header ─────────────────────────────────────────────────────── */
+header {
+  padding: 28px 40px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  backdrop-filter: blur(8px);
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(11,14,20,.85);
+}
+
+.logo {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.logo-mark {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(0,229,160,.1);
+  border: 1px solid rgba(0,229,160,.3);
+  padding: 3px 8px;
+  border-radius: 4px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.logo-name {
+  font-family: var(--sans);
+  font-weight: 800;
+  font-size: 20px;
+  color: var(--text);
+}
+.logo-sub {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--radius);
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  border: none;
+  transition: all .15s ease;
+}
+.btn-primary {
+  background: var(--accent);
+  color: #000;
+}
+.btn-primary:hover { background: #00ffb0; transform: translateY(-1px); }
+
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+.btn-danger {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  padding: 4px 8px;
+}
+.btn-danger:hover { color: var(--danger); border-color: var(--danger); }
+
+/* ── Main layout ─────────────────────────────────────────────────── */
+main {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: calc(100vh - 73px);
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────── */
+aside {
+  border-right: 1px solid var(--border);
+  padding: 24px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  background: rgba(17,21,32,.6);
+}
+
+.sidebar-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* Upload zone */
+.upload-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 20px 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: all .2s;
+  position: relative;
+}
+.upload-zone:hover, .upload-zone.drag-over {
+  border-color: var(--accent);
+  background: rgba(0,229,160,.04);
+}
+.upload-zone input[type=file] {
+  position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%;
+}
+.upload-icon { font-size: 28px; margin-bottom: 8px; }
+.upload-text { font-size: 12px; color: var(--muted); }
+.upload-text strong { color: var(--accent); }
+
+/* Progress bar */
+.progress-bar {
+  height: 3px;
+  background: var(--border);
+  border-radius: 99px;
+  overflow: hidden;
+  display: none;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  width: 0%;
+  transition: width .3s;
+  animation: pulse-bar 1.5s infinite;
+}
+@keyframes pulse-bar {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .5; }
+}
+
+/* Doc list */
+.doc-list { display: flex; flex-direction: column; gap: 6px; }
+
+.doc-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all .15s;
+  font-size: 13px;
+}
+.doc-item:hover { background: rgba(255,255,255,.04); border-color: var(--border); }
+.doc-item.active { background: rgba(0,229,160,.07); border-color: rgba(0,229,160,.3); }
+
+.doc-icon { font-size: 18px; flex-shrink: 0; }
+.doc-info { flex: 1; min-width: 0; }
+.doc-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+  font-size: 12px;
+}
+.doc-meta {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+.doc-delete { opacity: 0; transition: opacity .15s; }
+.doc-item:hover .doc-delete { opacity: 1; }
+
+.empty-docs {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  padding: 16px 0;
+  font-style: italic;
+}
+
+/* ── Content area ────────────────────────────────────────────────── */
+.content {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Search bar */
+.search-bar-wrap {
+  padding: 28px 36px 20px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(17,21,32,.4);
+  position: sticky; top: 73px; z-index: 50;
+  backdrop-filter: blur(8px);
+}
+
+.search-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.search-input-wrap {
+  flex: 1;
+  position: relative;
+}
+
+.search-icon {
+  position: absolute;
+  left: 14px; top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 16px;
+  pointer-events: none;
+}
+
+.search-input {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 16px;
+  font-family: var(--body);
+  padding: 13px 16px 13px 42px;
+  outline: none;
+  transition: border-color .15s;
+}
+.search-input::placeholder { color: var(--muted); }
+.search-input:focus { border-color: var(--accent); }
+
+.search-meta {
+  margin-top: 10px;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+.search-meta .filter-badge {
+  background: rgba(0,229,160,.12);
+  color: var(--accent);
+  border: 1px solid rgba(0,229,160,.25);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.search-meta .filter-badge:hover { background: rgba(0,229,160,.2); }
+
+/* Results */
+.results-area {
+  flex: 1;
+  padding: 24px 36px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.results-header {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.results-header span { color: var(--accent); }
+
+/* Result card */
+.result-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: start;
+  transition: all .15s ease;
+  animation: fadeUp .2s ease both;
+}
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.result-card:hover {
+  border-color: rgba(0,229,160,.3);
+  background: rgba(17,21,32,.9);
+  transform: translateX(2px);
+}
+
+.result-left { min-width: 0; }
+
+.result-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.result-doc {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
+
+.result-page {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #fff;
+  background: rgba(0,119,255,.2);
+  border: 1px solid rgba(0,119,255,.35);
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.result-score {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: auto;
+}
+
+.result-snippet {
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: #b0bec5;
+}
+.result-snippet mark {
+  background: rgba(255,214,10,.25);
+  color: var(--highlight);
+  border-radius: 2px;
+  padding: 0 2px;
+  font-weight: 600;
+}
+
+.result-right {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+
+.jump-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 14px;
+  background: rgba(0,229,160,.1);
+  border: 1px solid rgba(0,229,160,.3);
+  border-radius: var(--radius);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all .15s;
+  white-space: nowrap;
+}
+.jump-btn:hover {
+  background: rgba(0,229,160,.2);
+  border-color: var(--accent);
+  transform: translateX(2px);
+}
+
+/* States */
+.state-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--muted);
+  padding: 60px 20px;
+  text-align: center;
+}
+.state-empty .big-icon { font-size: 56px; opacity: .3; }
+.state-empty h2 { font-family: var(--sans); font-size: 20px; color: var(--text); opacity: .5; }
+.state-empty p { font-size: 13px; max-width: 320px; }
+
+.state-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 20px 0;
+}
+.spinner {
+  width: 18px; height: 18px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Toast */
+.toast-area {
+  position: fixed;
+  bottom: 24px; right: 24px;
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.toast {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  font-size: 13px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 240px;
+  box-shadow: var(--shadow);
+  animation: slideIn .2s ease;
+}
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(20px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.toast.success { border-color: rgba(0,229,160,.4); }
+.toast.error   { border-color: rgba(255,75,110,.4); }
+.toast-icon { font-size: 16px; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+/* Responsive */
+@media (max-width: 768px) {
+  main { grid-template-columns: 1fr; }
+  aside { border-right: none; border-bottom: 1px solid var(--border); }
+  header { padding: 16px 20px; }
+  .search-bar-wrap, .results-area { padding-left: 20px; padding-right: 20px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- ── Header ─────────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">
+    <div class="logo-mark">ICD-10</div>
+    <div class="logo-name">MedCode Search</div>
+    <div class="logo-sub">/ pdf-indexed</div>
+  </div>
+  <div class="header-right">
+    <div id="health-badge" style="font-family:var(--mono);font-size:11px;color:var(--muted);">
+      ● connecting…
+    </div>
+  </div>
+</header>
+
+<main>
+  <!-- ── Sidebar ──────────────────────────────────────────────────── -->
+  <aside>
+    <!-- Upload -->
+    <div>
+      <div class="sidebar-title" style="margin-bottom:10px;">
+        <span>Upload PDF</span>
+      </div>
+      <div class="upload-zone" id="uploadZone">
+        <input type="file" id="fileInput" accept=".pdf" multiple/>
+        <div class="upload-icon">📄</div>
+        <div class="upload-text">
+          <strong>Click or drag</strong> PDF files here
+        </div>
+      </div>
+      <div class="progress-bar" id="progressBar" style="margin-top:8px;">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+    </div>
+
+    <!-- Documents -->
+    <div>
+      <div class="sidebar-title" style="margin-bottom:10px;">
+        <span>Indexed Documents</span>
+        <span id="docCount" style="color:var(--accent);">0</span>
+      </div>
+      <div class="doc-list" id="docList">
+        <div class="empty-docs">No PDFs indexed yet.<br/>Upload one to get started.</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Search Content ───────────────────────────────────────────── -->
+  <div class="content">
+    <div class="search-bar-wrap">
+      <div class="search-row">
+        <div class="search-input-wrap">
+          <div class="search-icon">🔍</div>
+          <input
+            type="text"
+            id="searchInput"
+            class="search-input"
+            placeholder="Search ICD-10 codes, descriptions, keywords… e.g. F32.1"
+            autocomplete="off"
+          />
+        </div>
+        <button class="btn btn-ghost" onclick="clearSearch()">Clear</button>
+      </div>
+      <div class="search-meta" id="searchMeta" style="display:none;">
+        <span id="resultCount">—</span> results
+        <span id="filterBadge" class="filter-badge" style="display:none;" onclick="clearFilter()">
+          📎 <span id="filterName"></span> ✕
+        </span>
+      </div>
+    </div>
+
+    <div class="results-area" id="resultsArea">
+      <!-- Default state -->
+      <div class="state-empty" id="emptyState">
+        <div class="big-icon">🩺</div>
+        <h2>Search your PDF library</h2>
+        <p>Upload ICD-10 manuals or CPT code books on the left, then type any code or keyword to find exact page locations.</p>
+      </div>
+    </div>
+  </div>
+</main>
+
+</div><!-- /.app -->
+
+<!-- ── Toast area ─────────────────────────────────────────────────── -->
+<div class="toast-area" id="toastArea"></div>
+
+<!-- ── JavaScript ─────────────────────────────────────────────────── -->
+<script>
+// Auto-detect API URL:
+// - On Replit: uses the same host (Replit proxies port 80 → 8000)
+// - Locally:   falls back to localhost:8000
+const API = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+  ? 'http://localhost:8000'
+  : `${location.protocol}//${location.hostname}`;
+
+// ── State ─────────────────────────────────────────────────────────
+let documents      = [];
+let activeDocId    = null;
+let searchTimeout  = null;
+let lastQuery      = '';
+
+// ── Init ──────────────────────────────────────────────────────────
+(async function init() {
+  await checkHealth();
+  await loadDocuments();
+  document.getElementById('searchInput').addEventListener('input', onSearchInput);
+})();
+
+// ── Health ────────────────────────────────────────────────────────
+async function checkHealth() {
+  try {
+    const r = await fetch(`${API}/health`);
+    const d = await r.json();
+    document.getElementById('health-badge').innerHTML =
+      `<span style="color:var(--accent)">●</span> api connected · ${d.indexed_chunks} chunks`;
+  } catch {
+    document.getElementById('health-badge').innerHTML =
+      `<span style="color:var(--danger)">●</span> api offline`;
+  }
+}
+
+// ── Documents ─────────────────────────────────────────────────────
+async function loadDocuments() {
+  try {
+    const r = await fetch(`${API}/documents`);
+    documents = await r.json();
+    renderDocList();
+  } catch { /* api offline */ }
+}
+
+function renderDocList() {
+  const list = document.getElementById('docList');
+  document.getElementById('docCount').textContent = documents.length;
+
+  if (!documents.length) {
+    list.innerHTML = '<div class="empty-docs">No PDFs indexed yet.<br/>Upload one to get started.</div>';
+    return;
+  }
+
+  list.innerHTML = documents.map(doc => `
+    <div class="doc-item ${activeDocId === doc.doc_id ? 'active' : ''}"
+         onclick="filterByDoc('${doc.doc_id}', '${escHtml(doc.doc_name)}')">
+      <div class="doc-icon">📋</div>
+      <div class="doc-info">
+        <div class="doc-name" title="${escHtml(doc.doc_name)}">${escHtml(doc.doc_name)}</div>
+        <div class="doc-meta">${doc.chunk_count} chunks indexed</div>
+      </div>
+      <button class="btn btn-danger doc-delete"
+              onclick="event.stopPropagation(); deleteDoc('${doc.doc_id}', '${escHtml(doc.doc_name)}')"
+              title="Remove document">🗑</button>
+    </div>
+  `).join('');
+}
+
+// ── Upload ────────────────────────────────────────────────────────
+const uploadZone = document.getElementById('uploadZone');
+const fileInput  = document.getElementById('fileInput');
+const progressBar  = document.getElementById('progressBar');
+const progressFill = document.getElementById('progressFill');
+
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
+uploadZone.addEventListener('dragleave', ()  => uploadZone.classList.remove('drag-over'));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadZone.classList.remove('drag-over');
+  uploadFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', () => uploadFiles(fileInput.files));
+
+async function uploadFiles(files) {
+  for (const file of files) {
+    if (!file.name.endsWith('.pdf')) { toast(`${file.name} is not a PDF`, 'error'); continue; }
+    await uploadFile(file);
+  }
+  await loadDocuments();
+  await checkHealth();
+}
+
+async function uploadFile(file) {
+  progressBar.style.display = 'block';
+  progressFill.style.width  = '30%';
+  toast(`Uploading ${file.name}…`, 'info');
+
+  const form = new FormData();
+  form.append('file', file);
+
+  try {
+    progressFill.style.width = '70%';
+    const r = await fetch(`${API}/upload`, { method: 'POST', body: form });
+    progressFill.style.width = '100%';
+
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    toast(`✓ Indexed ${file.name} — ${d.chunks_indexed} chunks`, 'success');
+  } catch (e) {
+    toast(`Upload failed: ${e.message}`, 'error');
+  } finally {
+    setTimeout(() => {
+      progressBar.style.display = 'none';
+      progressFill.style.width  = '0%';
+    }, 600);
+  }
+}
+
+// ── Delete ────────────────────────────────────────────────────────
+async function deleteDoc(docId, docName) {
+  if (!confirm(`Remove "${docName}" from the index?`)) return;
+  try {
+    await fetch(`${API}/documents/${docId}`, { method: 'DELETE' });
+    if (activeDocId === docId) clearFilter();
+    await loadDocuments();
+    await checkHealth();
+    if (lastQuery) doSearch(lastQuery);
+    toast(`Removed ${docName}`, 'success');
+  } catch { toast('Delete failed', 'error'); }
+}
+
+// ── Search ────────────────────────────────────────────────────────
+function onSearchInput(e) {
+  clearTimeout(searchTimeout);
+  const q = e.target.value.trim();
+  if (!q) { clearResults(); return; }
+  searchTimeout = setTimeout(() => doSearch(q), 280);
+}
+
+async function doSearch(q) {
+  lastQuery = q;
+  showLoading();
+
+  const params = new URLSearchParams({ q, limit: 30 });
+  if (activeDocId) params.set('doc_id', activeDocId);
+
+  try {
+    const r = await fetch(`${API}/search?${params}`);
+    if (!r.ok) throw new Error('Search failed');
+    const results = await r.json();
+    renderResults(results, q);
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+function filterByDoc(docId, docName) {
+  activeDocId = docId === activeDocId ? null : docId;
+  renderDocList();
+
+  const badge    = document.getElementById('filterBadge');
+  const filterNm = document.getElementById('filterName');
+  if (activeDocId) {
+    badge.style.display    = 'inline-flex';
+    filterNm.textContent = docName;
+  } else {
+    badge.style.display = 'none';
+  }
+
+  if (lastQuery) doSearch(lastQuery);
+}
+
+function clearFilter() {
+  activeDocId = null;
+  renderDocList();
+  document.getElementById('filterBadge').style.display = 'none';
+  if (lastQuery) doSearch(lastQuery);
+}
+
+function clearSearch() {
+  document.getElementById('searchInput').value = '';
+  clearResults();
+}
+
+function clearResults() {
+  lastQuery = '';
+  const area = document.getElementById('resultsArea');
+  area.innerHTML = `
+    <div class="state-empty" id="emptyState">
+      <div class="big-icon">🩺</div>
+      <h2>Search your PDF library</h2>
+      <p>Upload ICD-10 manuals or CPT code books on the left, then type any code or keyword to find exact page locations.</p>
+    </div>`;
+  document.getElementById('searchMeta').style.display = 'none';
+}
+
+function showLoading() {
+  document.getElementById('resultsArea').innerHTML = `
+    <div class="state-loading">
+      <div class="spinner"></div>
+      Searching index…
+    </div>`;
+}
+
+function showError(msg) {
+  document.getElementById('resultsArea').innerHTML = `
+    <div class="state-empty">
+      <div class="big-icon">⚠️</div>
+      <h2>Search Error</h2>
+      <p>${escHtml(msg)}</p>
+    </div>`;
+}
+
+function renderResults(results, q) {
+  const area = document.getElementById('resultsArea');
+  const meta = document.getElementById('searchMeta');
+
+  meta.style.display = 'flex';
+  document.getElementById('resultCount').innerHTML =
+    `<span style="color:var(--accent)">${results.length}</span>`;
+
+  if (!results.length) {
+    area.innerHTML = `
+      <div class="state-empty">
+        <div class="big-icon">🔎</div>
+        <h2>No results</h2>
+        <p>No matches found for "<strong>${escHtml(q)}</strong>". Try different keywords or upload more PDFs.</p>
+      </div>`;
+    return;
+  }
+
+  area.innerHTML = results.map((r, i) => `
+    <div class="result-card" style="animation-delay:${i * 30}ms">
+      <div class="result-left">
+        <div class="result-top">
+          <div class="result-doc" title="${escHtml(r.doc_name)}">📋 ${escHtml(r.doc_name)}</div>
+          <div class="result-page">pg. ${r.page}</div>
+          <div class="result-score">score: ${r.score}</div>
+        </div>
+        <div class="result-snippet">${r.snippet}</div>
+      </div>
+      <div class="result-right">
+        <a class="jump-btn"
+           href="${API}${r.pdf_url}"
+           target="_blank"
+           title="Open PDF at page ${r.page}">
+          ↗ Jump to page ${r.page}
+        </a>
+        <button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;"
+                onclick="filterByDoc('${r.doc_id}', '${escHtml(r.doc_name)}')">
+          Filter doc
+        </button>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ── Toast ─────────────────────────────────────────────────────────
+function toast(msg, type = 'success') {
+  const area = document.getElementById('toastArea');
+  const el   = document.createElement('div');
+  el.className = `toast ${type}`;
+  const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : 'ℹ️';
+  el.innerHTML = `<span class="toast-icon">${icon}</span> ${escHtml(msg)}`;
+  area.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+// ── Helpers ───────────────────────────────────────────────────────
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+</script>
+</body>
+</html>
