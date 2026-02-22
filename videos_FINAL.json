@@ -1,0 +1,20 @@
+[
+  {
+    "id": "v001",
+    "title": "ICD-10-PCS Basisstappen codering uitgelegd",
+    "youtube_url": "https://www.youtube.com/watch?v=XXXXXXX1",
+    "keywords": ["basisstappen", "ICD-10-PCS", "codering", "procedure"]
+  },
+  {
+    "id": "v002",
+    "title": "Laparoscopische cholecystectomie coderen in ICD-10-PCS",
+    "youtube_url": "https://www.youtube.com/watch?v=XXXXXXX2",
+    "keywords": ["cholecystectomie", "0FT44", "laparoscopisch", "galblaas"]
+  },
+  {
+    "id": "v003",
+    "title": "Hoe gebruik je de ICD-10-PCS tabellen?",
+    "youtube_url": "https://www.youtube.com/watch?v=XXXXXXX3",
+    "keywords": ["tabel", "ICD-10-PCS", "kernprocedure", "lichaamsdeel"]
+  }
+]
