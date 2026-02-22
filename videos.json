@@ -1,44 +1,20 @@
 [
   {
     "id": "v001",
-    "title": "ICD-10-CM Specific Coding Guidelines - Sepsis",
-    "youtube_url": "https://youtu.be/mGOCEVfGknA?si=zhSJsi7Dq_KD-2_i",
-    "keywords": ["sepsis", "ICD-10-CM", "codering"]
+    "title": "ICD-10-PCS Basisstappen codering uitgelegd",
+    "youtube_url": "https://www.youtube.com/watch?v=XXXXXXX1",
+    "keywords": ["basisstappen", "ICD-10-PCS", "codering", "procedure"]
   },
   {
     "id": "v002",
-    "title": "ICD-10-CM Specific Coding Guidelines - Methicillin-Resistant Staphylococcus Aureus (MRSA)",
-    "youtube_url": "https://youtu.be/9hRBZdFhcNQ?si=_w8amqH9kW6CK7rJ",
-    "keywords": ["MRSA", "ICD-10-CM", "codering"]
+    "title": "Laparoscopische cholecystectomie coderen in ICD-10-PCS",
+    "youtube_url": "https://www.youtube.com/watch?v=XXXXXXX2",
+    "keywords": ["cholecystectomie", "0FT44", "laparoscopisch", "galblaas"]
   },
   {
     "id": "v003",
-    "title": "ICD-10-CM Chapter Specific Coding Guidelines - HIV",
-    "youtube_url": "https://youtu.be/ukeUhH3a8kc?si=rJZ930F-adwG2ZmA",
-    "keywords": ["HIV", "ICD-10-CM", "codering"]
-  },
-  {
-    "id": "v004",
-    "title": "ICD-10-CM Specific Coding Guidelines - Neoplasms Part ONE",
-    "youtube_url": "https://youtu.be/U50ahpo6jdg?si=n_Eh_l057BHCtKu7",
-    "keywords": ["Neoplasma", "ICD-10-CM", "codering"]
-  },
-  {
-    "id": "v005",
-    "title": "ICD-10-CM Specific Coding Guidelines - (begin 21:31) Neoplasms Part TWO",
-    "youtube_url": "https://youtu.be/1g0-8i-z1Mw?si=8yNaTYKo7ceQKMP7",
-    "keywords": ["Neoplasma", "ICD-10-CM", "codering"]
-  },
-  {
-    "id": "v006",
-    "title": "What Is a Pacemaker and How Does It Work?",
-    "youtube_url": "https://www.youtube.com/watch?v=bY46F55ZAvk",
-    "keywords": ["Pacemaker", "ICD-10-PCS", "tutorial", "codering"]
-  },
-  {
-    "id": "v007",
-    "title": "Cardioversion (Electrical) Procedure, Animation",
-    "youtube_url": "https://www.youtube.com/watch?v=_pFPAZFA2tQ",
-    "keywords": ["Cardioversie", "ICD-10-PCS", "tutorial", "codering"]
+    "title": "Hoe gebruik je de ICD-10-PCS tabellen?",
+    "youtube_url": "https://www.youtube.com/watch?v=XXXXXXX3",
+    "keywords": ["tabel", "ICD-10-PCS", "kernprocedure", "lichaamsdeel"]
   }
 ]
