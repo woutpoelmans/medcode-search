@@ -734,6 +734,124 @@ aside {
   font-weight: 600;
 }
 
+
+/* ── Tabs ────────────────────────────────────────────────────────── */
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  padding: 12px 36px 0;
+  border-bottom: 1px solid var(--border);
+  background: rgba(17,21,32,.4);
+}
+.tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 20px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all .15s;
+  margin-bottom: -1px;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.tab-count {
+  background: rgba(0,229,160,.15);
+  color: var(--accent);
+  border-radius: 99px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.tab-btn:not(.active) .tab-count {
+  background: rgba(255,255,255,.07);
+  color: var(--muted);
+}
+
+/* ── Video results ───────────────────────────────────────────────── */
+.video-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  gap: 16px;
+  padding: 24px 36px;
+}
+
+.video-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: all .15s;
+  animation: fadeUp .2s ease both;
+}
+.video-card:hover {
+  border-color: rgba(255,0,0,.3);
+  transform: translateY(-2px);
+}
+
+.video-embed {
+  position: relative;
+  width: 100%;
+  padding-top: 56.25%; /* 16:9 */
+  background: #000;
+}
+.video-embed iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.video-info {
+  padding: 12px 14px;
+}
+.video-title {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+.video-keywords {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.video-kw {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  background: rgba(255,255,255,.05);
+  border: 1px solid var(--border);
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+.video-score {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  margin-left: auto;
+}
+
+.video-empty {
+  grid-column: 1/-1;
+  text-align: center;
+  padding: 48px 20px;
+  color: var(--muted);
+}
+.video-empty .big-icon { font-size: 48px; opacity:.3; margin-bottom:12px; }
+
 </style>
 </head>
 <body>
@@ -807,6 +925,16 @@ aside {
           📎 <span id="filterName"></span> ✕
         </span>
       </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tab-bar">
+      <button class="tab-btn active" id="tab-pdf" onclick="switchTab('pdf')">
+        📄 PDF Resultaten <span class="tab-count" id="tab-pdf-count"></span>
+      </button>
+      <button class="tab-btn" id="tab-video" onclick="switchTab('video')">
+        🎬 Videos <span class="tab-count" id="tab-video-count"></span>
+      </button>
     </div>
 
     <div class="results-area" id="resultsArea">
@@ -976,6 +1104,10 @@ async function doSearch(q) {
     if (!r.ok) throw new Error('Search failed');
     const results = await r.json();
     renderResults(results, q);
+    // Also fetch videos in parallel
+    fetchVideos(q);
+    // Update PDF tab count
+    document.getElementById('tab-pdf-count').textContent = results.length > 0 ? results.length : '';
   } catch (e) {
     showError(e.message);
   }
@@ -1169,6 +1301,82 @@ function toast(msg, type = 'success') {
   el.innerHTML = `<span class="toast-icon">${icon}</span> ${escHtml(msg)}`;
   area.appendChild(el);
   setTimeout(() => el.remove(), 4000);
+}
+
+
+// ── Tab switching ──────────────────────────────────────────────────
+let currentTab = 'pdf';
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.getElementById('tab-pdf').classList.toggle('active', tab === 'pdf');
+  document.getElementById('tab-video').classList.toggle('active', tab === 'video');
+
+  if (tab === 'pdf') {
+    document.getElementById('resultsArea').style.display = 'flex';
+    const vg = document.getElementById('videoGrid');
+    if (vg) vg.style.display = 'none';
+  } else {
+    document.getElementById('resultsArea').style.display = 'none';
+    const vg = document.getElementById('videoGrid');
+    if (vg) vg.style.display = 'grid';
+  }
+}
+
+// ── Video search ───────────────────────────────────────────────────
+let videoResults = [];
+
+async function fetchVideos(q) {
+  try {
+    const r = await fetch(`${API}/videos/search?q=${encodeURIComponent(q)}`);
+    videoResults = await r.json();
+    renderVideos(videoResults);
+    // Update tab count
+    const count = videoResults.length;
+    document.getElementById('tab-video-count').textContent = count > 0 ? count : '';
+  } catch(e) {
+    console.error('Video search failed:', e);
+  }
+}
+
+function renderVideos(videos) {
+  // Create or get video grid
+  let grid = document.getElementById('videoGrid');
+  if (!grid) {
+    grid = document.createElement('div');
+    grid.id = 'videoGrid';
+    grid.className = 'video-grid';
+    document.getElementById('resultsArea').parentNode.appendChild(grid);
+  }
+  grid.style.display = currentTab === 'video' ? 'grid' : 'none';
+
+  if (!videos.length) {
+    grid.innerHTML = `
+      <div class="video-empty">
+        <div class="big-icon">🎬</div>
+        <p>Geen videos gevonden voor deze zoekopdracht.<br/>
+        Voeg videos toe via <code>videos.json</code>.</p>
+      </div>`;
+    return;
+  }
+
+  grid.innerHTML = videos.map((v, i) => `
+    <div class="video-card" style="animation-delay:${i*40}ms">
+      <div class="video-embed">
+        <iframe src="${escHtml(v.embed_url)}"
+                title="${escHtml(v.title)}"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowfullscreen></iframe>
+      </div>
+      <div class="video-info">
+        <div class="video-title">${escHtml(v.title)}</div>
+        <div class="video-keywords">
+          ${(v.keywords||[]).map(k => `<span class="video-kw">${escHtml(k)}</span>`).join('')}
+          <span class="video-score">score: ${v.score}</span>
+        </div>
+      </div>
+    </div>
+  `).join('');
 }
 
 // ── Helpers ───────────────────────────────────────────────────────

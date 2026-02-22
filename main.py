@@ -1,271 +1,246 @@
 """
-Medical Coder PDF Search — Flask Backend v8
---------------------------------------------
-Fixes:
-  1. Heading detector now handles numeric Dutch ICD-10 structure
-     e.g. "8  Hoofdstuk", "8.4  Sectie", "8.4.1  Subsectie"
-  2. Breadcrumb walks backwards from matched page correctly
-  3. Paragraph shows text from CORRECT matched page (not page 1)
-  4. Chunk text preserved as full lines (no word-splitting)
+Medical Coder PDF Search — Flask Backend v11
+---------------------------------------------
+Built from real PDF analysis of Handboek ICD-10-BE.
+
+Heading structure confirmed:
+  Level 1: "8 Basisstappen..." (appears in page header as "N Title pagenr")
+  Level 2: "8.4 Codeervoorbeelden"
+  Level 3: "8.4.1 Totale laparascopische cholecystectomie"
+
+Key fixes:
+  - TOC lines filtered out (contain ". . ." or end with page number only)
+  - Page headers filtered out ("N Title pagenr" pattern)
+  - Breadcrumb stops BEFORE the matched code line
+  - Paragraph = exact block containing the query term
 """
 
-import os
-import json
-import uuid
-import re
+import os, json, uuid, re
 from pathlib import Path
-
 from flask import Flask, request, jsonify, send_from_directory, send_file
 from pypdf import PdfReader
 
-# ── Config ─────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
 PDF_DIR  = BASE_DIR / "pdfs"
 IDX_FILE = BASE_DIR / "index_store" / "index.json"
-
 PDF_DIR.mkdir(exist_ok=True)
 IDX_FILE.parent.mkdir(exist_ok=True)
+VIDEO_FILE = BASE_DIR / "videos.json"
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024
 
-# ── Index helpers ───────────────────────────────────────────────────
+# ── Index ───────────────────────────────────────────────────────────
 def load_index():
-    if IDX_FILE.exists():
-        return json.loads(IDX_FILE.read_text())
-    return []
+    return json.loads(IDX_FILE.read_text()) if IDX_FILE.exists() else []
 
 def save_index(chunks):
     IDX_FILE.write_text(json.dumps(chunks, indent=2))
 
-# ── Heading detector ────────────────────────────────────────────────
-# Matches numbered headings like:
-#   "8  Hoofdstuk titel"          → level 1
-#   "8.4  Sectie titel"           → level 2
-#   "8.4.1  Subsectie titel"      → level 3
-#   "8.4.1.2  Sub-sub titel"      → level 3
-# Also matches Dutch/French keywords as fallback
-
-NUMERIC_HEADING = re.compile(
-    r'^(\d+(?:\.\d+)*)[\s\t]+([A-ZÀ-Ü\u00C0-\u017E].{1,100})$'
+# ── Heading detection ───────────────────────────────────────────────
+# Matches: "8.4.1 Totale laparascopische cholecystectomie"
+SECTION_RE = re.compile(
+    r'^(\d+(?:\.\d+)+)\s+([A-ZÀ-Üa-zà-ü].{2,100})$'
 )
-KEYWORD_HEADING = re.compile(
-    r'^(Hoofdstuk|Sectie|Afdeling|Chapitre|Section|Chapter|CHAPTER|PART|Deel)\s+.{1,80}$',
-    re.IGNORECASE
+# Matches page header: "8 Basisstappen in de ICD-10-PCS codering 86"
+# (top-level chapter number + title + page number at end)
+HEADER_RE = re.compile(
+    r'^(\d+)\s+([A-ZÀ-Üa-zà-ü].{5,100})\s+(\d+)$'
 )
+# TOC lines to ignore: contain ". . ." or just dots
+TOC_RE = re.compile(r'\.\s*\.\s*\.')
 
-def detect_heading(line):
+def classify_line(line, is_header_only=False):
+    """
+    Returns (level, clean_heading, is_header) or None.
+    level 1 = chapter, 2 = section (x.y), 3 = subsection (x.y.z+)
+    is_header = True means it is a page running header (should NOT clear deeper levels)
+    """
     line = line.strip()
-    if not line or len(line) > 150:
-        return None
+    if not line or TOC_RE.search(line):
+        return None  # skip TOC lines
 
-    # Numeric heading: "8.4.1  Title"
-    m = NUMERIC_HEADING.match(line)
+    # Section heading: "8.4" or "8.4.1" — these are real content headings
+    m = SECTION_RE.match(line)
     if m:
         number = m.group(1)
-        depth  = number.count('.') + 1   # "8"→1, "8.4"→2, "8.4.1"→3
+        depth  = number.count('.') + 1
         level  = min(depth, 3)
-        return (level, line)
+        return (level, line, False)
 
-    # Keyword heading: "Hoofdstuk 8 – ..."
-    if KEYWORD_HEADING.match(line):
-        return (1, line)
+    # Page header: "8 Basisstappen in de ICD-10-PCS codering 86"
+    # These repeat on every page and should NOT reset deeper levels
+    m = HEADER_RE.match(line)
+    if m:
+        heading = f"{m.group(1)} {m.group(2).strip()}"
+        return (1, heading, True)  # is_header=True
 
     return None
 
-# ── Build page-level text store ─────────────────────────────────────
-def get_pages_for_doc(doc_id):
-    """Return dict {page_num: full_text} for a document."""
+# ── Page store ──────────────────────────────────────────────────────
+def get_pages(doc_id):
+    """Return {page_num: text} for a document."""
     chunks = load_index()
     pages  = {}
     for c in chunks:
         if c["doc_id"] != doc_id:
             continue
         p = c["page"]
-        if p not in pages:
-            pages[p] = []
-        pages[p].append(c["text"])
-    # Join chunks per page
-    return {p: "\n".join(texts) for p, texts in pages.items()}
+        pages[p] = pages.get(p, "") + "\n" + c["text"]
+    return pages
 
-# ── Breadcrumb builder ──────────────────────────────────────────────
-
-def extract_paragraph(page_text, query):
-    """
-    From the full page text, extract the specific paragraph block
-    that contains the query terms. A paragraph is defined as lines
-    between two heading-like boundaries or blank lines.
-    Falls back to a windowed snippet if no clear block found.
-    """
-    if not page_text or not query:
-        return page_text[:500] if page_text else ""
-
-    terms = query.lower().split()
-    lines = page_text.split("\n")
-
-    # Split into blocks separated by blank lines or headings
-    blocks = []
-    current = []
-    for line in lines:
-        stripped = line.strip()
-        is_heading = detect_heading(stripped) is not None
-        is_blank   = stripped == ""
-
-        if is_heading or is_blank:
-            if current:
-                blocks.append("\n".join(current))
-                current = []
-            if is_heading:
-                blocks.append(stripped)  # heading as its own block
-        else:
-            current.append(stripped)
-
-    if current:
-        blocks.append("\n".join(current))
-
-    # Score each block by how many query terms it contains
-    scored = []
-    for block in blocks:
-        block_lower = block.lower()
-        score = sum(block_lower.count(t) for t in terms)
-        if score > 0:
-            scored.append((score, block))
-
-    if scored:
-        # Return the best matching block
-        scored.sort(key=lambda x: x[0], reverse=True)
-        best_block = scored[0][1]
-
-        # Also include the block immediately before (for context)
-        best_idx = blocks.index(best_block)
-        context_blocks = []
-        if best_idx > 0 and not detect_heading(blocks[best_idx - 1]):
-            context_blocks.append(blocks[best_idx - 1])
-        context_blocks.append(best_block)
-        return "\n\n".join(context_blocks)
-
-    # Fallback: windowed snippet around first term match
-    text_lower = page_text.lower()
-    for term in terms:
-        pos = text_lower.find(term)
-        if pos != -1:
-            start = max(0, pos - 200)
-            end   = min(len(page_text), pos + 400)
-            return ("..." if start > 0 else "") + page_text[start:end] + ("..." if end < len(page_text) else "")
-
-    return page_text[:500]
-
-def find_breadcrumb_and_paragraph(doc_id, match_page, query):
-    """
-    Scan all pages UP TO match_page.
-    On the matched page: stop updating breadcrumb once we pass
-    the line that contains the query term — so we never pick up
-    a heading that comes AFTER the matched code on the same page.
-    """
-    pages = get_pages_for_doc(doc_id)
+# ── Breadcrumb + paragraph ──────────────────────────────────────────
+def get_breadcrumb_and_paragraph(doc_id, match_page, query):
+    pages = get_pages(doc_id)
     if not pages:
         return {"breadcrumb": [], "paragraph": "", "page": match_page}
 
-    terms = query.lower().split() if query else []
-    breadcrumb_by_level = {}
+    terms = [t for t in query.lower().split() if len(t) > 1] if query else []
+    crumbs = {}   # {level: heading_text}
 
     for page_num in sorted(pages.keys()):
         page_text = pages[page_num]
         lines     = page_text.split("\n")
 
         if page_num < match_page:
-            # Pages before the match: scan everything
             for line in lines:
-                h = detect_heading(line)
+                h = classify_line(line)
                 if h:
-                    level, heading = h
-                    breadcrumb_by_level[level] = heading
-                    for deeper in list(breadcrumb_by_level.keys()):
-                        if deeper > level:
-                            del breadcrumb_by_level[deeper]
+                    level, heading, is_header = h
+                    if is_header:
+                        # Page running header: always update L1 but NEVER clear L2/L3
+                        crumbs[level] = heading
+                    else:
+                        # Real section heading: update and clear deeper levels
+                        crumbs[level] = heading
+                        for d in [k for k in crumbs if k > level]:
+                            del crumbs[d]
 
         elif page_num == match_page:
-            # On the matched page: scan line by line and STOP
-            # updating breadcrumb once we hit the line with the code
-            code_found = False
+            passed_match = False
             for line in lines:
-                line_lower = line.lower()
-
-                # Check if this line contains any query term
-                if not code_found and terms:
-                    if any(t in line_lower for t in terms):
-                        code_found = True
-                        # Do NOT update breadcrumb for this line or after
-
-                if not code_found:
-                    # Still before the code — update breadcrumb normally
-                    h = detect_heading(line)
+                if not passed_match:
+                    line_lower = line.lower()
+                    if terms and any(t in line_lower for t in terms):
+                        passed_match = True
+                        continue
+                    h = classify_line(line)
                     if h:
-                        level, heading = h
-                        breadcrumb_by_level[level] = heading
-                        for deeper in list(breadcrumb_by_level.keys()):
-                            if deeper > level:
-                                del breadcrumb_by_level[deeper]
-            break  # stop after matched page
+                        level, heading, is_header = h
+                        if is_header:
+                            # On matched page, header updates L1 but never clears L2/L3
+                            crumbs[level] = heading
+                        else:
+                            crumbs[level] = heading
+                            for d in [k for k in crumbs if k > level]:
+                                del crumbs[d]
+            break
 
-    breadcrumb = [breadcrumb_by_level[lvl]
-                  for lvl in sorted(breadcrumb_by_level.keys())]
+    breadcrumb = [crumbs[lvl] for lvl in sorted(crumbs.keys())]
 
-    # Extract only the paragraph block that contains the query terms
+    # Extract the exact paragraph containing the query term
     page_text = pages.get(match_page, "")
-    para      = extract_paragraph(page_text, query)
+    paragraph = extract_paragraph(page_text, terms)
 
-    # Highlight query terms
-    terms = query.lower().split() if query else []
+    # Highlight terms
     if terms:
-        for term in terms:
-            para = re.sub(
-                f"(?i)({re.escape(term)})",
-                r"<mark>\1</mark>",
-                para
-            )
+        for t in terms:
+            paragraph = re.sub(f"(?i)({re.escape(t)})",
+                               r"<mark>\1</mark>", paragraph)
 
-    return {
-        "breadcrumb": breadcrumb,
-        "paragraph":  para,
-        "page":       match_page,
-    }
+    return {"breadcrumb": breadcrumb, "paragraph": paragraph, "page": match_page}
 
-# ── Search helpers ──────────────────────────────────────────────────
-def search_index(query, doc_id=None, top_k=30):
-    chunks = load_index()
-    terms  = query.lower().split()
-    results = []
-    for chunk in chunks:
-        if doc_id and chunk["doc_id"] != doc_id:
-            continue
-        text_lower = chunk["text"].lower()
-        score = sum(text_lower.count(t) for t in terms)
+def extract_paragraph(page_text, terms):
+    """
+    Split page into blocks (separated by blank lines or headings).
+    Return the block with the most query term hits.
+    Falls back to a window around the first match.
+    """
+    if not page_text:
+        return ""
+    if not terms:
+        return page_text[:600]
+
+    lines   = page_text.split("\n")
+    blocks  = []
+    current = []
+
+    for line in lines:
+        stripped = line.strip()
+        is_blank   = stripped == ""
+        is_heading = classify_line(stripped) is not None  # uses 3-tuple now
+
+        if is_blank or is_heading:
+            if current:
+                blocks.append("\n".join(current))
+                current = []
+            if is_heading and stripped:
+                blocks.append(stripped)
+        else:
+            current.append(stripped)
+    if current:
+        blocks.append("\n".join(current))
+
+    # Score blocks
+    scored = []
+    for block in blocks:
+        bl = block.lower()
+        score = sum(bl.count(t) for t in terms)
         if score > 0:
-            results.append({**chunk, "score": score})
-    results.sort(key=lambda x: x["score"], reverse=True)
-    return results[:top_k]
+            scored.append((score, block))
 
-def highlight_snippet(text, query, window=250):
+    if scored:
+        scored.sort(reverse=True)
+        best = scored[0][1]
+        idx  = blocks.index(best)
+        # Include the preceding non-heading block as context if exists
+        parts = []
+        if idx > 0 and classify_line(blocks[idx-1]) is None and blocks[idx-1].strip():
+            parts.append(blocks[idx-1])
+        parts.append(best)
+        return "\n\n".join(parts)
+
+    # Fallback: window around first term
+    tl = page_text.lower()
+    for t in terms:
+        pos = tl.find(t)
+        if pos != -1:
+            s = max(0, pos - 200)
+            e = min(len(page_text), pos + 400)
+            return ("…" if s > 0 else "") + page_text[s:e] + ("…" if e < len(page_text) else "")
+
+    return page_text[:600]
+
+# ── Search ──────────────────────────────────────────────────────────
+def highlight_snippet(text, query, window=260):
     terms      = query.lower().split()
     text_lower = text.lower()
-    best_pos   = -1
-    for t in terms:
-        pos = text_lower.find(t)
-        if pos != -1 and (best_pos == -1 or pos < best_pos):
-            best_pos = pos
+    best_pos   = next((text_lower.find(t) for t in terms if text_lower.find(t) != -1), -1)
     if best_pos == -1:
         snippet = text[:window]
     else:
-        start   = max(0, best_pos - window // 2)
-        end     = min(len(text), best_pos + window // 2)
-        snippet = ("..." if start > 0 else "") + text[start:end] + ("..." if end < len(text) else "")
+        s = max(0, best_pos - window // 2)
+        e = min(len(text), best_pos + window // 2)
+        snippet = ("…" if s > 0 else "") + text[s:e] + ("…" if e < len(text) else "")
     for t in terms:
         snippet = re.sub(f"(?i)({re.escape(t)})", r"<mark>\1</mark>", snippet)
     return snippet
 
-# ── PDF ingestion ───────────────────────────────────────────────────
-# Store full page text per chunk (one chunk per page) to preserve line structure
+def search_index(query, doc_id=None, top_k=30):
+    chunks = load_index()
+    terms  = query.lower().split()
+    results = []
+    for c in chunks:
+        if doc_id and c["doc_id"] != doc_id:
+            continue
+        tl    = c["text"].lower()
+        score = sum(tl.count(t) for t in terms)
+        if score > 0:
+            results.append({**c, "score": score})
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results[:top_k]
+
+# ── Ingestion (one chunk per page) ──────────────────────────────────
 def ingest_pdf(pdf_path, doc_id, doc_name):
     all_chunks = load_index()
     new_chunks = []
@@ -274,14 +249,10 @@ def ingest_pdf(pdf_path, doc_id, doc_name):
         text = page.extract_text() or ""
         if not text.strip():
             continue
-        # Store full page as one chunk — preserves line breaks for heading detection
         new_chunks.append({
-            "id":       str(uuid.uuid4()),
-            "doc_id":   doc_id,
-            "doc_name": doc_name,
-            "page":     page_num,
-            "text":     text,
-            "pdf_path": pdf_path.name,
+            "id": str(uuid.uuid4()), "doc_id": doc_id,
+            "doc_name": doc_name,   "page": page_num,
+            "text": text,           "pdf_path": pdf_path.name,
         })
     all_chunks.extend(new_chunks)
     save_index(all_chunks)
@@ -314,7 +285,7 @@ def upload_pdf():
         count = ingest_pdf(pdf_path, doc_id, file.filename)
     except Exception as e:
         pdf_path.unlink(missing_ok=True)
-        return jsonify({"error": f"Failed to parse PDF: {e}"}), 500
+        return jsonify({"error": str(e)}), 500
     return jsonify({"doc_id": doc_id, "doc_name": file.filename, "chunks_indexed": count})
 
 @app.route("/search")
@@ -324,19 +295,14 @@ def search():
     limit  = int(request.args.get("limit", 30))
     if not q:
         return jsonify({"error": "Query required"}), 400
-    raw     = search_index(q, doc_id=doc_id, top_k=limit)
-    results = []
-    for r in raw:
-        results.append({
-            "chunk_id": r["id"],
-            "doc_id":   r["doc_id"],
-            "doc_name": r["doc_name"],
-            "page":     r["page"],
-            "snippet":  highlight_snippet(r["text"], q),
-            "pdf_url":  f"/pdfs/{r['pdf_path']}#page={r['page']}",
-            "score":    r["score"],
-        })
-    return jsonify(results)
+    raw = search_index(q, doc_id=doc_id, top_k=limit)
+    return jsonify([{
+        "chunk_id": r["id"],   "doc_id":   r["doc_id"],
+        "doc_name": r["doc_name"], "page":  r["page"],
+        "snippet":  highlight_snippet(r["text"], q),
+        "pdf_url":  f"/pdfs/{r['pdf_path']}#page={r['page']}",
+        "score":    r["score"],
+    } for r in raw])
 
 @app.route("/chapter")
 def get_chapter():
@@ -345,8 +311,7 @@ def get_chapter():
     query  = request.args.get("q", "").strip()
     if not doc_id:
         return jsonify({"error": "doc_id required"}), 400
-    result = find_breadcrumb_and_paragraph(doc_id, page, query)
-    return jsonify(result)
+    return jsonify(get_breadcrumb_and_paragraph(doc_id, page, query))
 
 @app.route("/documents")
 def list_documents():
@@ -366,11 +331,79 @@ def delete_document(doc_id):
     deleted   = [c for c in chunks if c["doc_id"] == doc_id]
     if not deleted:
         return jsonify({"error": "Document not found"}), 404
-    pdf_path = PDF_DIR / deleted[0]["pdf_path"]
-    pdf_path.unlink(missing_ok=True)
+    (PDF_DIR / deleted[0]["pdf_path"]).unlink(missing_ok=True)
     save_index(remaining)
     return jsonify({"deleted_chunks": len(deleted), "doc_id": doc_id})
 
+
+
+# ── Video helpers ───────────────────────────────────────────────────
+def load_videos():
+    if VIDEO_FILE.exists():
+        return json.loads(VIDEO_FILE.read_text())
+    return []
+
+def save_videos(videos):
+    VIDEO_FILE.write_text(json.dumps(videos, indent=2))
+
+def youtube_embed_url(url):
+    """Convert any YouTube URL to embed URL."""
+    import re
+    # Handle youtu.be/ID and youtube.com/watch?v=ID
+    m = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})", url)
+    if m:
+        return f"https://www.youtube.com/embed/{m.group(1)}"
+    return url
+
+def search_videos(query):
+    """Search videos by matching query terms against keywords and title."""
+    videos = load_videos()
+    terms  = query.lower().split()
+    results = []
+    for v in videos:
+        searchable = " ".join(v.get("keywords", [])).lower() + " " + v.get("title", "").lower()
+        score = sum(searchable.count(t) for t in terms)
+        if score > 0:
+            results.append({**v, "score": score, "embed_url": youtube_embed_url(v["youtube_url"])})
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results
+
+# ── Video routes ────────────────────────────────────────────────────
+@app.route("/videos/search")
+def video_search():
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify([])
+    return jsonify(search_videos(q))
+
+@app.route("/videos", methods=["GET"])
+def list_videos():
+    return jsonify(load_videos())
+
+@app.route("/videos", methods=["POST"])
+def add_video():
+    data = request.get_json()
+    if not data or not data.get("youtube_url") or not data.get("title"):
+        return jsonify({"error": "title and youtube_url required"}), 400
+    videos = load_videos()
+    new_video = {
+        "id":          str(uuid.uuid4())[:8],
+        "title":       data["title"],
+        "youtube_url": data["youtube_url"],
+        "keywords":    data.get("keywords", []),
+    }
+    videos.append(new_video)
+    save_videos(videos)
+    return jsonify(new_video)
+
+@app.route("/videos/<video_id>", methods=["DELETE"])
+def delete_video(video_id):
+    videos    = load_videos()
+    remaining = [v for v in videos if v["id"] != video_id]
+    if len(remaining) == len(videos):
+        return jsonify({"error": "Video not found"}), 404
+    save_videos(remaining)
+    return jsonify({"deleted": video_id})
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
